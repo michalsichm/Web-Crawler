@@ -17,7 +17,7 @@ public class URIinfo {
         try {
             this.uri = new URI(str);
         } catch (URISyntaxException e) {
-            e.printStackTrace();
+            // e.printStackTrace();
         }
         this.depth = depth;
     }

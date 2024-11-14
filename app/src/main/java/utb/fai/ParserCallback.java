@@ -1,108 +1,86 @@
 package utb.fai;
 
+import java.io.IOException;
 import java.net.URI;
-import java.util.HashSet;
-import java.util.LinkedList;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentLinkedQueue;
 
-import javax.swing.text.MutableAttributeSet;
-import javax.swing.text.html.HTML;
-import javax.swing.text.html.HTMLEditorKit;
+import org.jsoup.Jsoup;
+import org.jsoup.nodes.Document;
+import org.jsoup.nodes.Element;
+import org.jsoup.select.Elements;
 
-/**
- * Třída ParserCallback je používána parserem DocumentParser,
- * je implementován přímo v JDK a umí parsovat HTML do verze 3.0.
- * Při parsování (analýze) HTML stránky volá tento parser
- * jednotlivé metody třídy ParserCallback, co nám umožuje
- * provádět s částmi HTML stránky naše vlastní akce.
- * 
- * @author Tomá Dulík
- */
-class ParserCallback extends HTMLEditorKit.ParserCallback {
+class Parser implements Runnable {
 
-    /**
-     * pageURI bude obsahovat URI aktuální parsované stránky. Budeme
-     * jej vyuívat pro resolving všech URL, které v kódu stránky najdeme
-     * - předtím, než nalezené URL uložíme do foundURLs, musíme z něj udělat
-     * absolutní URL!
-     */
-    URI pageURI;
+    private URI pageURI;
+    private int depth;
+    Set<URI> visitedURIs;
+    ConcurrentLinkedQueue<URIinfo> foundURIs;
+    ConcurrentHashMap<String, Integer> map;
 
-    /**
-     * depth bude obsahovat aktuální hloubku zanoření
-     */
-    int depth = 0, maxDepth = 5;
-
-    /**
-     * visitedURLs je množina všech URL, které jsme již navtívili
-     * (parsovali). Pokud najdeme na stránce URL, který je v této množině,
-     * nebudeme jej u dále parsovat
-     */
-    HashSet<URI> visitedURIs;
-
-    /**
-     * foundURLs jsou všechna nová (zatím nenavštívená) URL, která na stránce
-     * najdeme. Poté, co projdeme celou stránku, budeme z tohoto seznamu
-     * jednotlivá URL brát a zpracovávat.
-     */
-    LinkedList<URIinfo> foundURIs;
-
-    /** pokud debugLevel>1, budeme vypisovat debugovací hlášky na std. error */
-    int debugLevel = 0;
-
-    ParserCallback(HashSet<URI> visitedURIs, LinkedList<URIinfo> foundURIs) {
+    Parser(Set<URI> visitedURIs, ConcurrentLinkedQueue<URIinfo> foundURIs,
+            ConcurrentHashMap<String, Integer> map, URI pageURI, int depth) {
+        this.pageURI = pageURI;
+        this.depth = depth;
         this.foundURIs = foundURIs;
         this.visitedURIs = visitedURIs;
+        this.map = map;
     }
 
-    /**
-     * metoda handleSimpleTag se volá např. u značky <FRAME>
-     */
-    public void handleSimpleTag(HTML.Tag t, MutableAttributeSet a, int pos) {
-        handleStartTag(t, a, pos);
+    private void crawl() throws IOException {
+        if (visitedURIs.contains(pageURI)) {
+            return;
+        }
+        Document doc = Jsoup.connect(pageURI.toString()).get();
+        parseLinks(doc);
+        parseText(doc);
+        synchronized (visitedURIs) {
+            visitedURIs.add(pageURI);
+        }
     }
 
-    public void handleStartTag(HTML.Tag t, MutableAttributeSet a, int pos) {
-        URI uri;
-        String href = null;
-        if (debugLevel > 1)
-            System.err.println("handleStartTag: " + t.toString() + ", pos=" + pos + ", attribs=" + a.toString());
-        if (depth <= maxDepth)
-            if (t == HTML.Tag.A)
-                href = (String) a.getAttribute(HTML.Attribute.HREF);
-            else if (t == HTML.Tag.FRAME)
-                href = (String) a.getAttribute(HTML.Attribute.SRC);
-        if (href != null)
-            try {
-                uri = pageURI.resolve(href);
-                if (!uri.isOpaque() && !visitedURIs.contains(uri)) {
-                    visitedURIs.add(uri);
-                    foundURIs.add(new URIinfo(uri, depth + 1));
-                    if (debugLevel > 0)
-                        System.err.println("Adding URI: " + uri.toString());
-                }
-            } catch (Exception e) {
-                System.err.println("Nalezeno nekorektní URI: " + href);
-                e.printStackTrace();
+    public void parseLinks(Document doc) {
+        Elements elements = doc.select("a[href]");
+        for (Element element : elements) {
+            String link = element.absUrl("href");
+            if (link == null || link.isEmpty()) {
+                continue;
             }
-
+            URIinfo uriInfo = new URIinfo(link, depth + 1);
+            synchronized (foundURIs) {
+                foundURIs.add(uriInfo);
+            }
+        }
     }
 
-    /******************************************************************
-     * V metodě handleText bude probíhat veškerá činnost, související se
-     * zjiováním četnosti slov v textovém obsahu HTML stránek.
-     * IMPLEMENTACE TÉTO METODY JE V TÉTO ÚLOZE VAŠÍM ÚKOLEM !!!!
-     * Možný postup:
-     * Ve třídě Parser (klidně v její metodě main) si vytvořte vyhledávací tabulku
-     * =instanci třídy HashMap<String,Integer> nebo TreeMap<String,Integer>.
-     * Do této tabulky si ukládejte dvojice klíč-data, kde
-     * klíčem jsou jednotlivá slova z textového obsahu HTML stránek,
-     * data typu Integer bude dosavadní počet výskytu daného slova v
-     * HTML stránkách.
-     *******************************************************************/
-    public void handleText(char[] data, int pos) {
-        System.out.println("handleText: " + String.valueOf(data) + ", pos=" + pos);
-        /**
-         * ...tady bude vaše implementace...
-         */
+    private void parseText(Document doc) throws IOException {
+        String[] words = doc.text().toLowerCase().replaceAll("[^a-zA-Z\\s]", "").trim().split("\\s+");
+        for (String word : words) {
+            if (word.length() == 1 && !word.equals("a")) {
+                continue;
+            }
+            map.put(word, map.containsKey(word) ? map.get(word) + 1 : 1);
+        }
+    }
+
+    public static void printResults(ConcurrentHashMap<String, Integer> map) {
+        List<Map.Entry<String, Integer>> list = new ArrayList<>(map.entrySet());
+        list.sort((entry1, entry2) -> entry2.getValue().compareTo(entry1.getValue()));
+        for (Map.Entry<String, Integer> entry : list.subList(0, 20)) {
+            System.out.println(entry.getKey() + ";" + entry.getValue());
+        }
+    }
+
+    @Override
+    public void run() {
+        try {
+            crawl();
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
     }
 }

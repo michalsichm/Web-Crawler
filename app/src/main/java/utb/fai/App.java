@@ -3,54 +3,62 @@
  */
 package utb.fai;
 
-import java.io.BufferedReader;
-import java.io.FileNotFoundException;
-import java.io.InputStreamReader;
 import java.net.URI;
+import java.util.Collections;
 import java.util.HashSet;
-import java.util.LinkedList;
-
-import javax.swing.text.html.parser.ParserDelegator;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 public class App {
 
 	public static void main(String[] args) {
-		LinkedList<URIinfo> foundURIs = new LinkedList<URIinfo>();
-		HashSet<URI> visitedURIs = new HashSet<URI>();
-		URI uri;
-		try {
-			uri = new URI(args[0] + "/");
-			foundURIs.add(new URIinfo(uri, 0));
-			visitedURIs.add(uri);
+		ConcurrentLinkedQueue<URIinfo> foundURIs = new ConcurrentLinkedQueue<>();
+		Set<URI> visitedURIs = Collections.synchronizedSet(new HashSet<URI>());
+		ConcurrentHashMap<String, Integer> map = new ConcurrentHashMap<>();
+		int maxDepth = 2;
 
-			if (args.length < 1) {
-				System.err.println("Missing parameter - start URL");
-				return;
+		if (args.length < 1) {
+			System.err.println("Missing parameter - start URL");
+			return;
+		}
+
+		if (args.length == 2) {
+			try {
+				maxDepth = Integer.decode(args[1]);
+			} catch (NumberFormatException e) {
+				System.err.printf("Argument %s is not integer, using default value", args[1], maxDepth);
 			}
-			/**
-			 * Zde zpracujte dalí parametry - maxDepth a debugLevel
-			 */
+		}
 
-			ParserCallback callBack = new ParserCallback(visitedURIs, foundURIs);
-			ParserDelegator parser = new ParserDelegator();
+		try {
+			URI startURI = new URI(args[0]);
+			foundURIs.add(new URIinfo(startURI, 0));
+
+			ExecutorService executorService = Executors.newFixedThreadPool(8);
+			URIinfo uri = foundURIs.poll();
+			Parser initialParser = new Parser(visitedURIs, foundURIs, map, uri.uri, uri.depth);
+			executorService.execute(initialParser);
+
+			Thread.sleep(3000);
 
 			while (!foundURIs.isEmpty()) {
-				URIinfo URIinfo = foundURIs.removeFirst();
-				callBack.depth = URIinfo.depth;
-				callBack.pageURI = uri = URIinfo.uri;
-				System.err.println("Analyzing " + uri);
-				try {
-					BufferedReader reader = new BufferedReader(new InputStreamReader(uri.toURL().openStream()));
-					parser.parse(reader, callBack, true);
-					reader.close();
-				} catch (FileNotFoundException e) {
-					System.err.println("Error loading page - does it exist?");
-				}
+				// System.out.println(foundURIs.isEmpty());
+				URIinfo uriInfo = foundURIs.poll();
+				if (uriInfo.depth <= maxDepth) {
+					Parser parser = new Parser(visitedURIs, foundURIs, map, uriInfo.uri, uriInfo.depth);
+					executorService.execute(parser);
+				} else
+					break;
 			}
+			executorService.shutdown();
+			executorService.awaitTermination(10, TimeUnit.MINUTES);
+			Parser.printResults(map);
 		} catch (Exception e) {
-			System.err.println("Zachycena neoetøená výjimka, konèíme...");
-			e.printStackTrace();
+			// e.printStackTrace();
 		}
 	}
-
 }
